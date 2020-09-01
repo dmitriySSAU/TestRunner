@@ -1,61 +1,44 @@
-from lib.log_and_statistic import log
+import time
+import threading
+
+from lib.log_and_statistic.log import Log
+from lib.log_and_statistic.statistic import Statistic
+
 
 from tests.test_DB import TestDB
+from tests.test_Web import TestWeb
 from tests.test_QML import TestQML
 from tests.test_PTZ import TestPTZ
+from tests.test_Media import TestMedia
 from tests.test_Users import TestUsers
 from tests.test_Server import TestServer
+from tests.test_Ewriter import TestEwriter
 from tests.test_Analytics import TestAnalytics
+from tests.test_Common import TestCommon
 
 
 test_classes = {
-    "TestServer": TestServer,
-    "TestAnalytics": TestAnalytics,
-    "TestQML": TestQML,
-    "TestPTZ": TestPTZ,
-    "TestDB": TestDB,
-    "TestUsers": TestUsers
+    "Server": TestServer,
+    "Analytics": TestAnalytics,
+    "QML": TestQML,
+    "PTZ": TestPTZ,
+    "DB": TestDB,
+    "Users": TestUsers,
+    "Ewriter": TestEwriter,
+    "Web": TestWeb,
+    "Media": TestMedia,
+    "Common": TestCommon
 }
-
-
-def get_test_case(tests_paths: list) -> list:
-    classes_names: list = get_classes_names(tests_paths)
-    tests_names: list = get_tests_names(tests_paths)
-
-    test_case: list = []
-    for index, test_name in enumerate(tests_names):
-        test_case.append({
-            "class": classes_names[index],
-            "test": test_name
-        })
-
-    return test_case
-
-
-def get_classes_names(tests_paths: list) -> list:
-    classes_names: list = []
-    for test_path in tests_paths:
-        point_index = test_path.find(".")
-        classes_names.append(test_path[:point_index])
-
-    return classes_names
-
-
-def get_tests_names(tests_paths: list) -> list:
-    tests_names: list = []
-    for test_path in tests_paths:
-        point_index = test_path.find(".")
-        tests_names.append(test_path[point_index + 1:])
-
-    return tests_names
 
 
 class TestCase:
     """Класс тест-кейса для запуска тестов внутри него
 
     """
-    def __init__(self, tests_paths: list):
-        self._test_case: list = get_test_case(tests_paths)
+    def __init__(self, tests_config: tuple, runner_config: dict, log: Log):
+        self._tests_config: tuple = tests_config
+        self._runner_config = runner_config
+        self._log = log
 
     def setup(self):
         """Функция будет вызываться перед запуском каждого тест кейса
@@ -76,15 +59,68 @@ class TestCase:
 
         :return:
         """
-        for test in self._test_case:
-            test_class = test_classes[test["class"]]()
-            available_tests: dict = test_class.get_tests_methods()
-            try:
-                test_class.setup()
-                available_tests[test["test"]]()
-                test_class.teardown()
-            except AssertionError as error:
-                log.print_error("Тест завершился с ошибкой: " + str(error))
 
+        test_case_statistic = Statistic("Тест-кейс", 1, self._runner_config, self._log)
+        test_threads: list = []
+
+        for test in self._tests_config:
+            test_case_statistic.append_success("----------------------------------ТЕСТ " + test['module'] + "." +
+                                               test['test'] + "------------------------------------", "ЗАПУСК")
+            for thread in range(test['threads']):
+                test_threads.append(self.TestRunner(thread + 1, test['module'], test['test'], test['input_data'],
+                                                    self._runner_config, self._log))
+            for thread in test_threads:
+                thread.start()
+            for thread in test_threads:
+                thread.join()
+            test_case_statistic.append_success("----------------------------------ТЕСТ " + test['module'] + "." +
+                                               test['test'] + "------------------------------------", "ЗАВЕРШЕНИЕ")
+            for thread in test_threads:
+                statistic = thread.get_statistic()
+                statistic.show_errors_statistic()
+                statistic.show_warns_statistic()
+                if self._runner_config['settings']['create_report']:
+                    statistic.create_report()
+            test_threads.clear()
+            time.sleep(test['wait_time'])
         return True
 
+    class TestRunner(threading.Thread):
+        """Класс для запуска тесте из тест кейса в отдельном потоке.
+
+        """
+        def __init__(self, thread_id: int, module: str, test: str, input_data: dict, config: dict, log: Log):
+            threading.Thread.__init__(self)
+            self._statistic = Statistic(test, thread_id, config, log)
+
+            self._test_class = test_classes[module](input_data, config, self._statistic)
+            self._test = test
+            self._id = str(thread_id)
+
+        def get_statistic(self):
+            """Метод-геттер получения объекта статистики.
+
+            :return:
+            """
+            return self._statistic
+
+        def run(self):
+            """Переопределенный метод запуска потока.
+
+            """
+            full_test_name = self._test + "[Поток #" + self._id + "]"
+            test_method = getattr(self._test_class, self._test)
+            error_msg = ""
+            try:
+                self._test_class.setup()
+                test_method()
+            except SystemExit as e:
+                error_msg = e.args[0]
+            self._test_class.teardown()
+
+            if error_msg:
+                self._statistic.append_error("Тест " + full_test_name + " завершился с критической ошибкой: "
+                                             + error_msg, "КРИТ")
+            else:
+                self._statistic.append_success("Тест " + full_test_name + " завершился без критических ошибок!",
+                                               "УСПЕХ")

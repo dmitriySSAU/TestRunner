@@ -4,36 +4,42 @@ import json
 import hashlib
 import sqlite3
 
+from typing import Tuple
+
 from lib.log_and_statistic import log
-from lib.log_and_statistic.statistics import Statistic
+from lib.log_and_statistic.statistic import Statistic
 
 from scripts.common import tools
 
 
 def json_float_parser(string: str) -> float:
-    """Функция парсинга json строки для десериализации.
+    """Функция парсинга типа float в json при десериализации.
+    Необходима для избавления от экспоненты при десириализации, которая автоматически
+    добавляется библиотекой json.
 
-    :param string:
-    :return:
+    :param string: строка с float.
+
+    :return: отформатированный float без экспоненты.
     """
     format_s = '{:20.20}'.format(string)
     float_format_s = float(format_s)
     return float_format_s
 
 
-def get_full_json_graph_by_cam(path_to_db: str, key1: str, key2: str, key3: str, statistic: Statistic) -> dict:
+def get_cam_json(path_to_db: str, key1: str, key2: str, key3: str, statistic: Statistic) -> dict:
     """Получение json графа (камеры) из БД.
 
     Делает SELECT запрос к БД на получение json-ов всех камер и профилей, а затем осуществляется
     поиск нужной камеры.
-    :param path_to_db: путь к файлу БД
-    :param key1: имя сервера
-    :param key2: имя камеры
-    :param key3: профиль камеры
-    :param statistic: объект класса Statistic
-    :return: json в виде словаря
+    :param path_to_db: путь к файлу БД;
+    :param key1: имя сервера;
+    :param key2: имя камеры;
+    :param key3: профиль камеры;
+    :param statistic: объект класса Statistic.
+
+    :return: json в виде словаря.
     """
-    logger = log.get_logger("scripts/common/db")
+    logger = statistic.get_log().get_logger("scripts/common/db")
     logger.info("was called path_to_db: str, key1: str, key2: str, key3: str, statistic: Statistic)")
     logger.debug("with params (" + path_to_db + ", " + key1 + ", " + key2 + ", " + key3 + ")")
 
@@ -47,17 +53,22 @@ def get_full_json_graph_by_cam(path_to_db: str, key1: str, key2: str, key3: str,
         sql_cmd = 'SELECT setvalue FROM setting WHERE settypeid = ? AND setname = ?'
         cursor.execute(sql_cmd, [1, db_setname])
         json_cam = cursor.fetchall()
-
         conn.commit()
         conn.close()
 
         if not json_cam:
-            statistic.append_error("Камера '" + db_setname + "' отсутствует!", "БД", False)
+            statistic.append_error("Камера '" + db_setname + "' отсутствует!", "БД")
             return {}
 
         logger.info("db select json by '" + db_setname + "' cam was executed successfully!")
-        log.print_all("Получение json из БД камеры '" + db_setname + "' выполнено успешно!")
-        return json.loads(json_cam[0][0], parse_float=json_float_parser)
+        statistic.append_info("Получение json из БД камеры '" + db_setname + "' выполнено успешно!", "БД")
+        # в некоторых плагинах есть сочетания слешей вида: \/, которое нельзя никак заменять.
+        # При десериализации по умолчанию символ \ пропадает, как служебный.
+        # Поэтому перед десериализацией необходимо добавить два слеша, чтобы было так (\\/).
+        # Однако почему то в таком случае после десериализации оно так и останется (\\/), а не (\/).
+        # То есть потом при сериализации этот момент нужно учесть и заменить на \/.
+        replaced_json_cam = json_cam[0][0].replace("\\/", "\\\\/")
+        return json.loads(replaced_json_cam, parse_float=json_float_parser)
     except sqlite3.OptimizedUnicode:
         statistic.append_error("Ошибка выполнения команды!", "БД", True)
 
@@ -76,7 +87,7 @@ def update_setname_by_cam(path_to_db: str, key1: str, key2: str, key3: str, new_
     :param statistic: объект класса Statistic
     :return: код ошибки: 0 - все ок.
     """
-    logger = log.get_logger("scripts/common/db")
+    logger = statistic.get_log().get_logger("scripts/common/db")
     logger.info("was called (path_to_db: str, key1: str, key2: str, key3: str, new_key1: str, new_key2: str," +
                 "new_key3: str, statistic: Statistic)")
     logger.debug("with params (" + path_to_db + ", " + key1 + ", " + key2 + ", " + key3 + ", " + new_key1 + ", "
@@ -109,33 +120,34 @@ def update_setname_by_cam(path_to_db: str, key1: str, key2: str, key3: str, new_
         statistic.append_error("Ошибка выполнения команды!", "БД", True)
 
 
-def update_full_json_graph_by_cam(path_to_db: str, key1: str, key2: str, key3: str, json_cam: dict,
-                                  statistic: Statistic) -> int:
+def update_cam_json(db_path: str, key1: str, key2: str, key3: str, cam_json: dict, statistic: Statistic) -> int:
     """Изменение json указанной камеры в БД.
 
-    :param path_to_db:
-    :param key1: имя сервера
-    :param key2: имя камеры
-    :param key3: профиль камеры
-    :param json_cam: json (граф) камеры
-    :param statistic: объект класса Statistic
+    :param db_path: путь к БД;
+    :param key1: имя сервера;
+    :param key2: имя камеры;
+    :param key3: профиль камеры;
+    :param cam_json: json (граф) камеры;
+    :param statistic: объект класса Statistic.
+
     :return: код ошибки: 0 - все ок.
     """
-    logger = log.get_logger("scripts/common/db")
-    logger.info("call func update_full_json_graph_by_cam(path_to_db, key1, key2, key3, dict_json_graph)")
-    logger.debug("update_full_json_graph_by_cam(" + path_to_db + ", " + key1 + ", " + key2 + ", " + key3 + ", "
-                 + str(json_cam) + ")")
+    logger = statistic.get_log().get_logger("scripts/common/db")
+    logger.info("was called (db_path: str, key1: str, key2: str, key3: str, cam_json: dict, statistic: Statistic)")
+    logger.debug("with params (" + db_path + ", " + key1 + ", " + key2 + ", " + key3 + ", " + str(cam_json) +
+                 ", stat_obj)")
 
-    if not os.path.exists(path_to_db):
+    if not os.path.exists(db_path):
         statistic.append_error("Файла БД не существует!", "БД", True)
 
     try:
         time.sleep(0.2)
-        conn = sqlite3.connect(path_to_db)
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         db_setname = key1 + "_" + key2 + "_" + key3
-        db_setvalue = json.dumps(json_cam)
-        db_setvalue = db_setvalue.replace("/$", "\\/$")
+        db_setvalue = json.dumps(cam_json, indent="\t", ensure_ascii=False)
+        # Учитывается момент с \\/ и заменяется на \/.
+        db_setvalue = db_setvalue.replace("\\\\/", "\\/")
 
         sql_cmd = "SELECT setid FROM setting WHERE settypeid = ? AND setname = ?"
         cursor.execute(sql_cmd, [1, db_setname])
@@ -150,7 +162,7 @@ def update_full_json_graph_by_cam(path_to_db: str, key1: str, key2: str, key3: s
         if db_sethash == db_sethash_new:
             conn.close()
             logger.info("cam '" + key2 + "' on server '" + key1 + "' already has the same json!")
-            log.print_all("Камера '" + db_setname + "' уже имеет такой json!")
+            statistic.append_info("Камера '" + db_setname + "' уже имеет такой json!", "БД")
             return 0
 
         time.sleep(0.2)
@@ -160,7 +172,7 @@ def update_full_json_graph_by_cam(path_to_db: str, key1: str, key2: str, key3: s
 
         conn.close()
         logger.info("db update json for '" + key2 + "' cam was executed successfully")
-        log.print_all("Обновление json камеры '" + db_setname + "' выполнено успешно!")
+        statistic.append_info("Обновление json камеры '" + db_setname + "' выполнено успешно!", "БД")
         return 0
     except sqlite3.OptimizedUnicode:
         statistic.append_error("Ошибка выполнения команды!", "БД", True)
@@ -270,106 +282,133 @@ def delete_cam(path_to_db: str, key1: str, key2: str, key3: str, statistic: Stat
         statistic.append_error("Ошибка выполнения команды!", "БД", True)
 
 
-def get_lists_key2_and_id54(path_to_db: str, key1: str, statistic: Statistic) -> tuple:
-    """Получение списка занятых id54 на ВСЕХ серверах и key2 на УКАЗАННОМ сервере камер
+def get_cams_names(db_path: str, server: str, statistic: Statistic) -> tuple:
+    """Получение списка имен камер с указанного сервера.
 
-    :param path_to_db: путь к бд
-    :param key1: имя сервера
-    :param statistic: объект класса Statistic
+    :param db_path: путь к бд;
+    :param server: имя сервера;
+    :param statistic: объект класса Statistic.
 
-    :return:  tuple: 0 - список key2; 1 - список id54
+    :return: список имен камер с конкретного сервера.
     """
 
-    if not os.path.exists(path_to_db):
+    if not os.path.exists(db_path):
         statistic.append_error("Файла БД не существует!", "БД", True)
 
+    full_names = []
     try:
         time.sleep(0.2)
-        conn = sqlite3.connect(path_to_db)
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        sql_cmd = "SELECT setvalue FROM setting WHERE settypeid = ?"
-        cursor.execute(sql_cmd, [1])
-        jsons_cams: list = cursor.fetchall()
+        sql_cmd = "SELECT setname FROM setting WHERE settypeid = ? AND setname LIKE ?"
+        cursor.execute(sql_cmd, [1, server + "%"])
+        full_names: list = cursor.fetchall()
 
         conn.commit()
         conn.close()
     except sqlite3.OptimizedUnicode:
         statistic.append_error("Ошибка выполнения команды!", "БД", True)
 
-    list_id54: list = []
-    list_key2: list = []
-    for json_cam in jsons_cams:
-        json_cam: dict = json.loads(json_cam[0])
+    if not full_names:
+        statistic.append_warn("Сервер: " + server + "!", "НЕТ_КАМЕР")
 
-        # добавляем в список занятый key2
-        tools.check_keys_exist(json_cam, ['common'], 'json_cam', True, statistic)
-        tools.check_keys_exist(json_cam['common'], ['key1', 'key2', 'key3'], 'json_cam["common"]', True, statistic)
-        to_add = True
-        for key2 in list_key2:
-            if key2 == json_cam['common']['key2']:
-                to_add = False
+    cams_names: list = []
+    for full_name in full_names:
+        first_index_ = full_name[0].find("_")
+        last_index_ = full_name[0].rfind("_")
+        new_cam_name = full_name[0][first_index_ + 1: last_index_]
+
+        # из-за разных профилей по одной камере могут быть одинаковые имена,
+        # а дублирование имен не нужно.
+        add = True
+        for cam_name in cams_names:
+            if new_cam_name == cam_name:
+                add = False
                 break
-        if to_add and json_cam['common']['key1'] == key1:
-            list_key2.append(json_cam['common']['key2'])
+        if add:
+            cams_names.append(new_cam_name)
 
-        # добавляем в список занятый id54
-        tools.check_keys_exist(json_cam, ['network_5_4'], 'json_cam', True, statistic)
-        tools.check_types(['network_5_4'], [json_cam['network_5_4']], [list], statistic)
-        tools.check_values(['network_5_4'], [json_cam['network_5_4']], [0], [">"], statistic)
+    return tuple(cams_names)
 
-        tools.check_keys_exist(json_cam['network_5_4'][0], ['iv54server'], 'json_cam["network_5_4"][0]', True, statistic)
-        tools.check_keys_exist(json_cam['network_5_4'][0]['iv54server'], ['ID_54'],
-                               'json_cam["network_5_4"][0]["iv54server"]', True, statistic)
-        tools.check_keys_exist(json_cam['network_5_4'][0]['iv54server']['ID_54'], ['_value'],
-                               'json_cam["network_5_4"][0]["iv54server"]["ID_54"]', True, statistic)
+
+def get_cams_id(db_path: str, statistic: Statistic) -> tuple:
+    if not os.path.exists(db_path):
+        statistic.append_error("Файла БД не существует!", "БД", True)
+
+    cam_jsons = []
+    try:
+        time.sleep(0.2)
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        sql_cmd = "SELECT setvalue FROM setting WHERE settypeid = ?"
+        cursor.execute(sql_cmd, [1])
+        cam_jsons: list = cursor.fetchall()
+
+        conn.commit()
+        conn.close()
+    except sqlite3.OptimizedUnicode:
+        statistic.append_error("Ошибка выполнения команды!", "БД", True)
+
+    list_id54 = []
+    for cam_json in cam_jsons:
+        cam_json = json.loads(cam_json[0])
+        if tools.check_keys_exist(cam_json, ['network_5_4'], 'cam_json', False, statistic) is False:
+            continue
+        tools.check_types(['network_5_4'], [cam_json['network_5_4']], [list], statistic)
+
+        if not cam_json['network_5_4']:
+            continue
+        if tools.check_keys_exist(cam_json['network_5_4'][0], ['iv54server'], 'cam_json["network_5_4"][0]', False,
+                                  statistic) is False:
+            continue
+        if tools.check_keys_exist(cam_json['network_5_4'][0]['iv54server'], ['ID_54'],
+                                  'cam_json["network_5_4"][0]["iv54server"]', False, statistic) is False:
+            continue
+        if tools.check_keys_exist(cam_json['network_5_4'][0]['iv54server']['ID_54'], ['_value'],
+                                  'cam_json["network_5_4"][0]["iv54server"]["ID_54"]', False, statistic) is False:
+            continue
         to_add = True
         for id54 in list_id54:
-            if id54 == json_cam['network_5_4'][0]['iv54server']['ID_54']["_value"]:
+            if id54 == cam_json['network_5_4'][0]['iv54server']['ID_54']["_value"]:
                 to_add = False
                 break
         if to_add:
-            list_id54.append(json_cam['network_5_4'][0]['iv54server']['ID_54']["_value"])
+            list_id54.append(cam_json['network_5_4'][0]['iv54server']['ID_54']["_value"])
 
-    if not list_key2:
-        statistic.append_error("on server '" + key1 + "'!", "NO_CAMS", False)
-
-    return list_key2, list_id54
+    return tuple(list_id54)
 
 
-def get_list_key1(path_to_db: str, statistic: Statistic):
+def get_servers(db_path: str, statistic: Statistic) -> Tuple[str]:
     """Получение списка всех серверов из БД.
 
-    :param path_to_db: путь к бд
-    :param statistic: объект класса Statistic
-    :return:
+    :param db_path: путь к бд;
+    :param statistic: объект класса Statistic.
+
+    :return: список серверов.
     """
-    logger = log.get_logger("scripts/common/db")
+    logger = statistic.get_log().get_logger("scripts/common/db")
     logger.info("was called (path_to_db: str, statistic: Statistic)")
-    logger.debug("with params (" + path_to_db + ")")
+    logger.debug("with params (" + db_path + ")")
 
-    if not os.path.exists(path_to_db):
+    if not os.path.exists(db_path):
         statistic.append_error("Файла БД не существует!", "БД", True)
-
     try:
         time.sleep(0.2)
-        conn = sqlite3.connect(path_to_db)
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-
         sql_cmd = "SELECT vsrname FROM videoserver"
         cursor.execute(sql_cmd)
         query_result = cursor.fetchall()
-
         conn.commit()
         conn.close()
 
         servers = []
         for result in query_result:
             servers.append(result[0])
-
-        if not servers == 0:
-            statistic.append_error("Нет ни одного сервера!", "БД", True)
-
-        return servers
+        if not servers:
+            statistic.append_error("Не обнаружено ни одного сервера!", "БД")
+        return tuple(servers)
     except sqlite3.OptimizedUnicode:
         statistic.append_error("Ошибка выполнения команды!", "БД", True)

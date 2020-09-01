@@ -1,13 +1,35 @@
 import zmq
 import time
 import threading
-import configparser
 from typing import List
 import xml.etree.ElementTree as Tree
 
 from lib.log_and_statistic import log
+from lib.log_and_statistic.statistic import Statistic
 
-from scripts.xml import zmq as zmq_script
+
+def search_response_index_by_message_id(xml_responses: list, message_id: str, statistic: Statistic) -> int:
+    """Поиск в списке xml у которого значение тега messageId совпадает с message_id.
+
+    :param xml_responses: список xml
+    :param message_id: значение тега messageId
+    :param statistic: объект класса Statistic
+    :return: 1) индекс в списке; 2) -1 в случае отсутствия совпадения
+    """
+    logger = log.get_logger("scripts/xml/zmq")
+    logger.info("was called (list_xml_responses, message_id)")
+    logger.debug("(" + str(xml_responses) + ", " + str(message_id) + ")")
+
+    for index, response in enumerate(xml_responses):
+        tag_nessage_id = response.find(".//messageId")
+        if tag_nessage_id is None:
+            statistic.append_error("Отсутствует тег 'messageId'", "ZMQ_ОТВЕТ", True)
+        logger.debug("response messageId is " + tag_nessage_id.text)
+        if message_id == tag_nessage_id.text:
+            logger.info("message_Id is equal!")
+            return index
+        logger.info("message_Id isn't equal!")
+    return -1
 
 
 class ZmqClient:
@@ -15,16 +37,15 @@ class ZmqClient:
 
         Реализован механизм многопоточной передачи-приема по одному сокету.
     """
-    def __init__(self):
-        config = configparser.ConfigParser()
-        config.read(log.path + "runner.conf")
-        self._sid = config.get("zmq", "sid")
-        self._ip = config.get("server", "ip")
-        self._port = config.get("server", "port")
+    def __init__(self, config: dict, statistic: Statistic):
+        self._sid = config['zmq']['sid']
+        self._ip = config['server']['ip']
+        self._port = config['server']['zmq_port']
+        self._statistic = statistic
 
         self._context = zmq.Context()
         self._socket = self._context.socket(zmq.PAIR)
-        self._socket.connect("tcp://" + self._ip + ":" + self._port)
+        self._socket.connect("tcp://" + self._ip + ":" + str(self._port))
         self._list_responses = []
         self._handler_thread = None
         # блокировка для раннего уничтожения объекта потока
@@ -50,7 +71,7 @@ class ZmqClient:
     def get_thread_memory_lock(self) -> threading.Lock:
         return self._thread_memory_lock
 
-    def get_list_response(self) -> List[Tree]:
+    def get_list_response(self) -> list:
         """Получить список всех текущих ответов.
 
         :return: список ответов _list_responses
@@ -69,7 +90,8 @@ class ZmqClient:
         """
         self._thread_memory_lock.acquire()
 
-        index_delete = zmq_script.search_response_index_by_message_id(self._list_responses, message_id)
+        index_delete = 0
+        search_response_index_by_message_id(self._list_responses, message_id, self._statistic)
         if index_delete != -1:
             self._list_responses.pop(index_delete)
             self._thread_memory_lock.release()
@@ -147,11 +169,11 @@ class ZmqClient:
         """
         def __init__(self, zmqClient, logger):
             threading.Thread.__init__(self, daemon=True)
-            self.zmqClient = zmqClient
-            self.logger = logger
+            self._zmqClient = zmqClient
+            self._logger = logger
 
-            self.__poller__ = zmq.Poller()
-            self.__poller__.register(self.zmqClient.__socket__, zmq.POLLIN)
+            self._poller = zmq.Poller()
+            self._poller.register(self._zmqClient._socket, zmq.POLLIN)
 
         def run(self):
             """Механизм приема сообщений.
@@ -160,23 +182,23 @@ class ZmqClient:
             """
             while True:
                 # условие остановки потока
-                self.zmqClient.get_handler_thread_destroy_lock().acquire()
-                if self.zmqClient._destroy_handler_thread_flag is True:
-                    self.zmqClient._destroy_handler_thread_flag = False
-                    self.zmqClient.get_handler_thread_destroy_lock().release()
+                self._zmqClient.get_handler_thread_destroy_lock().acquire()
+                if self._zmqClient._destroy_handler_thread_flag is True:
+                    self._zmqClient._destroy_handler_thread_flag = False
+                    self._zmqClient.get_handler_thread_destroy_lock().release()
                     return
-                self.zmqClient.get_handler_thread_destroy_lock().release()
+                self._zmqClient.get_handler_thread_destroy_lock().release()
 
                 # ожидание ответа по сокету
-                sockets = dict(self.__poller__.poll())
-                if self.zmqClient.__socket__ in sockets:
-                    self.zmqClient.__thread_memory_lock__.acquire()
-                    str_response = self.zmqClient.__socket__.recv()
-                    self.logger.debug("str_response: " + str_response.decode())
+                sockets = dict(self._poller.poll())
+                if self._zmqClient._socket in sockets:
+                    self._zmqClient._thread_memory_lock.acquire()
+                    str_response = self._zmqClient._socket.recv()
+                    self._logger.debug("str_response: " + str_response.decode())
                     xml_response = Tree.fromstring(str_response)
-                    self.zmqClient.get_list_response().append(xml_response)
-                    self.zmqClient.get_signal_event().set()
-                    self.zmqClient.get_thread_memory_lock().release()
+                    self._zmqClient._list_responses.append(xml_response)
+                    self._zmqClient.get_signal_event().set()
+                    self._zmqClient.get_thread_memory_lock().release()
 
 
 

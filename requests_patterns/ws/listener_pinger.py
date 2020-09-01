@@ -1,4 +1,4 @@
-def listener_pinger_get_local_servers(login, password, direct_access):
+def listener_pinger_get_local_servers(token: str, direct_access: int) -> tuple:
     params = {
         "server_ip": "string",
         "direct_access": direct_access,
@@ -7,15 +7,14 @@ def listener_pinger_get_local_servers(login, password, direct_access):
         "version": "v1"
     }
     sysparams = {
-        "login": login,
-        "password": password,
-        "session_id": "testing",
+        "token": token,
+        "session_id": "py_testing",
         "timeout": 50
     }
     return params, sysparams, 'listener_pinger:get_local_servers'
 
 
-def listener_pinger_get_down_servers(login, password, direct_access):
+def listener_pinger_get_down_servers(token: str, direct_access: int) -> tuple:
     params = {
         "server_ip": "string",
         "direct_access": direct_access,
@@ -24,9 +23,8 @@ def listener_pinger_get_down_servers(login, password, direct_access):
         "version": "v1"
     }
     sysparams = {
-        "login": login,
-        "password": password,
-        "session_id": "testing",
+        "token": token,
+        "session_id": "py_testing",
         "timeout": 50
     }
     return params, sysparams, 'listener_pinger:get_down_servers'

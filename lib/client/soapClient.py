@@ -1,13 +1,14 @@
 import time
 import json
-import configparser
+
 from zeep import Client
-from zeep.exceptions import TransportError
 from zeep.plugins import HistoryPlugin
+from zeep.exceptions import TransportError
+
 from requests.exceptions import ConnectionError
 
-from lib.log_and_statistic.statistics import Statistic
-from lib.log_and_statistic import log
+from lib.log_and_statistic.statistic import Statistic
+
 from scripts.common import tools
 
 
@@ -15,113 +16,135 @@ class SoapClient:
     """Класс для отправки/приема сообщений по протоколу SOAP
 
     """
-    def __init__(self, ip: str, port: str, statistic: Statistic):
+
+    def __init__(self, ip: str, port: int, config: dict, statistic: Statistic):
         self._statistic = statistic
-        self._logger = log.get_logger("client\\soapClient")
+        self._logger = statistic.get_log().get_logger("client/soapClient")
 
         self._ip = ip
         self._port = port
-        config = configparser.ConfigParser()
-        config.read(log.path + "\\runner.conf")
-        self._request_ws_pause = config.get("ws", "pause")
+        self._history = HistoryPlugin()
+        self._url = 'http://' + self._ip + ':' + str(self._port) + '/axis2/services/Iv7Server/?wsdl'
+        while True:
+            try:
+                self._client = Client(self._url, plugins=[self._history])
+                break
+            except ConnectionError:
+                self._statistic.append_error("Сервис не доступен на " + self._url, "WS_ПОДКЛЮЧЕНИЕ")
+                self._logger.error("Unable connect to " + self._url)
+                time.sleep(5)
 
-    def get_request_pause(self) -> int:
+        self._request_ws_pause: float = config['ws']['pause']
+        self._timeout: int = config['ws']['timeout']
+        self._expected_response_time: float = config['ws']['expected_response_time']
+
+    def get_request_pause(self) -> float:
         """Получение значения паузы между ws запросами
 
         :return: пауза
         """
         return self._request_ws_pause
 
-    def set_request_pause(self, pause: int) -> None:
+    def set_request_pause(self, pause: float) -> None:
         """Установка значения паузы между запросами
 
         :param pause: пауза
         """
         self._request_ws_pause = pause
 
-    def call_method2(self, method: str, params: dict, sysparams: dict, user_code_capture: bool) -> dict:
+    def call_method2(self, method: str, params: dict, sysparams: dict, expected_user_codes: list) -> dict:
         """Метод отправки сообщения и приема ответа по протоколу SOAP.
 
-        :param method: имя ws метода
-        :param params: параметры метода
-        :param sysparams: системные параметры
-        :param user_code_capture: флаг проверки ключа user_code на равенство нулю
-        :return: словарь, полученный из json ответа
+        :param method: имя ws метода;
+        :param params: параметры метода;
+        :param sysparams: системные параметры;
+        :param expected_user_codes: ожидаемые значения user_code.
+
+        :return: словарь, полученный из json ответа.
         """
-        self._logger.info("was called (method: str, params: dict, sysparams: dict, user_code_capture: bool)")
+        self._logger.info("was called (method: str, params: dict, sysparams: dict, expected_user_code: int)")
         self._logger.debug("with params(" + method + ", " + str(params) + ", " + str(sysparams) + ", " +
-                           str(user_code_capture))
+                           str(expected_user_codes))
 
-        history = HistoryPlugin()
-        url = 'http://' + self._ip + ':' + self._port + '/axis2/services/Iv7Server/?wsdl'
         try:
-            log.print_all("\n[ЗАПРОС]")
-            log.print_all("    Отправка: POST")
-            log.print_all("    URL: " + url)
-            log.print_all("    WS метод: " + method)
-            log.print_all("    Параметры: " + str(params))
+            time.sleep(self._request_ws_pause)
 
-            time.sleep(float(self._request_ws_pause))
-            client = Client(url, plugins=[history])
+            self._statistic.append_info("\n    Отправка: POST\n" +
+                                        "    URL: " + self._url + "\n" +
+                                        "    WS метод: " + method + "\n" +
+                                        "    Параметры: " + str(params), "WS_ЗАПРОС")
+
+            sysparams['timeout'] = self._timeout
             start_time = time.time()
-            response = client.service.CallMethod2(
-                method, json.dumps(params), json.dumps(sysparams))
+            response: str = self._client.service.CallMethod2(method, json.dumps(params), json.dumps(sysparams))
             response_time = round((time.time() - start_time) * 1000)
 
             self._logger.info("response received")
             self._logger.debug("response: " + str(response))
 
-            headers = history.last_received['http_headers']
-            size = headers['Content-Length']
-            self._print_response_info(url, size, response_time)
+            headers: dict = self._history.last_received['http_headers']
+            size: str = headers['Content-Length']
+            self._print_response_info(method, size, response_time)
 
-            response_json = json.loads(response)
-            tools.check_keys_exist(response_json, ['user_code', 'result'], 'response_json', True, self._statistic)
-            tools.check_types(["response_json['result']"], [response_json["result"]], [list], self._statistic)
+            response: dict = json.loads(response)
+            if tools.check_keys_exist(response, ['user_code'], 'response', False, self._statistic) is False:
+                tools.check_keys_exist(response, ['code'], 'response', True, self._statistic)
+            tools.check_keys_exist(response, ['result'], 'response', True, self._statistic)
+            tools.check_types(["response['result']"], [response["result"]], [list], self._statistic)
 
-            if not response_json["result"]:
-                self._statistic.append_error("Ключ 'result' пустой!", "WS_ОТВЕТ", True)
+            user_code_msg = ""
+            equal_user_codes = False
+            if 'user_code' in response:
+                for expected_user_code in expected_user_codes:
+                    if response["user_code"] == expected_user_code:
+                        equal_user_codes = True
+                        break
+                user_code_msg = "Значение 'user-code': " + str(response["user_code"]) + "! "
+            else:
+                equal_user_codes = True
+            # иногда user_code может быть равен 0 (якобы все хорошо),
+            # но есть ключ code, который может быть НЕ равен 0.
+            code_msg = ""
+            if 'code' in response:
+                for expected_user_code in expected_user_codes:
+                    if response['code'] == expected_user_code and equal_user_codes:
+                        return response
+                code_msg = "Значение 'code': " + str(response["code"]) + "! "
+            elif equal_user_codes:
+                return response
+            self._logger.error("response: " + str(response))
 
-            if response_json["user_code"] == 0:
-                return response_json
-
-            if user_code_capture is False:
-                return response_json
-
-            if 'user_msg' in response_json:
-                self._statistic.append_error("Значение 'user-code': " + str(response_json["user_code"]) +
-                                             "... требуется 0. Значение 'user_msg': " + response_json["user_msg"],
-                                             "WS_ОТВЕТ", True)
-
-            if 'user_msg' in response_json['result'][0]:
-                self._statistic.append_error("Значение 'user-code': " + str(response_json['result'][0]["user_code"])
-                                             + "... требуется 0. Значение 'user_msg': " +
-                                             response_json['result'][0]["user_msg"], "WS_ОТВЕТ", True)
-
-            self._statistic.append_error("Значение 'user-code': " + str(response_json["user_code"])
-                                         + "... требуется 0.", "WS_ОТВЕТ", True)
-
+            if 'user_msg' in response:
+                self._statistic.append_error(user_code_msg + code_msg + "Требуется " + str(expected_user_codes) +
+                                             ". 'user_msg': " + response["user_msg"], "WS_ОТВЕТ: " + method, True)
+            if response['result'] and 'user_msg' in response['result'][0]:
+                self._statistic.append_error(user_code_msg + code_msg + "Требуется " + str(expected_user_codes) +
+                                             ". 'user_msg': " + response['result'][0]["user_msg"], "WS_ОТВЕТ: " +
+                                             method, True)
+            self._statistic.append_error(user_code_msg + code_msg + "Требуется " + str(expected_user_codes) + ".",
+                                         "WS_ОТВЕТ: " + method, True)
         except ConnectionError:
-            self._statistic.append_error("Веб сервис не доступен на " + url, "ПОДКЛЮЧЕНИЕ", False)
-            self._logger.error("Unable connect to " + url)
-            time.sleep(10)
-            self.call_method2(method, params, sysparams, user_code_capture)
+            self._statistic.append_error("Сервис не доступен на " + self._url, "WS_ПОДКЛЮЧЕНИЕ")
+            self._logger.error("Unable connect to " + self._url)
+            time.sleep(5)
+            return self.call_method2(method, params, sysparams, expected_user_codes)
         except TransportError as e:
-            self._statistic.append_error("Код статуса: " + e.status_code, "ПОДКЛЮЧЕНИЕ", False)
-            self._logger.error("Status code is " + e.status_code)
-            time.sleep(10)
-            self.call_method2(method, params, sysparams, user_code_capture)
+            self._statistic.append_error("Код статуса: " + str(e.status_code), "WS_ПОДКЛЮЧЕНИЕ")
+            self._logger.error("Status code is " + str(e.status_code))
+            time.sleep(5)
+            return self.call_method2(method, params, sysparams, expected_user_codes)
         except json.JSONDecodeError:
             self._statistic.append_error("Некорректный формат JSON!", "WS_ОТВЕТ", True)
 
-    def _print_response_info(self, url: str, size: str, response_time: int):
+    def _print_response_info(self, method: str, size: str, response_time: int):
         self._logger.info("Status code is 200")
 
-        log.print_all("[ОТВЕТ]")
-        log.print_all("    Статус: 200 ОК")
-        log.print_all("    Размер: " + size + " Б")
-        log.print_all("    Время ответа: " + str(response_time) + " мс\n")
+        self._statistic.append_info("\n    Статус: 200 ОК\n" +
+                                    "    Размер: " + size + " Б\n" +
+                                    "    Время ответа: " + str(response_time) + " мс", "WS_ОТВЕТ: " + method)
 
-        if response_time > 200:
-            self._logger.error("Response time more than 200ms")
-            self._statistic.append_warn("Response time is " + str(response_time), "WS_RESPONSE")
+        expected_time_ms = self._expected_response_time * 1000
+        if response_time > expected_time_ms:
+            self._logger.error("Response time more than " + str(expected_time_ms) + "ms")
+            self._statistic.append_warn("Время ответа больше " + str(expected_time_ms) + "мс (" +
+                                        str(response_time) + ")", "WS_ОТВЕТ: " + method)

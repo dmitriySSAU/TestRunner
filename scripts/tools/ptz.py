@@ -1,7 +1,7 @@
 import time
 
 from lib.log_and_statistic import log
-from lib.log_and_statistic.statistics import Statistic
+from lib.log_and_statistic.statistic import Statistic
 
 from lib.client.soapClient import SoapClient
 
@@ -12,16 +12,12 @@ from scripts.common import tools
 def compare_coordinates(first_coordinate: int, second_coordinate: int, inaccuracy: int = 0) -> bool:
     """Функция сравнения двух координат.
 
-    :param first_coordinate: первая координата
-    :param second_coordinate: вторая координата
-    :param inaccuracy: погершность равенства координат
+    :param first_coordinate: первая координата;
+    :param second_coordinate: вторая координата;
+    :param inaccuracy: погершность равенства координат.
 
     :return: True - равны; False - различны.
     """
-    logger = log.get_logger("scripts/tools/ptz")
-    logger.info("was called (first_coordinate: int, second_coordinate: int, inaccuracy: int = 0)")
-    logger.debug("with params (" + str(first_coordinate) + ", " + str(second_coordinate) + ", " + str(inaccuracy) + ")")
-
     if first_coordinate == second_coordinate:
         return True
     else:
@@ -43,27 +39,25 @@ def compare_coordinates(first_coordinate: int, second_coordinate: int, inaccurac
 
 
 def get_coordinates(client: SoapClient, login: str, password: str, key2: str, statistic: Statistic) -> dict:
-    """Функция для получения координат (использует ws метод ptzclient:Command)
+    """Функция для получения координат (использует ws метод ptzclient:Command).
 
-    :param client: объект soap клиента
-    :param login: логин пользователя
-    :param password: пароль пользователя
-    :param key2: имя камеры
-    :param statistic: объект класса Statistic
+    :param client: объект soap клиента;
+    :param login: логин пользователя;
+    :param password: пароль пользователя;
+    :param key2: имя камеры;
+    :param statistic: объект класса Statistic.
 
-    :return: словарь с координатами (ключи pan и tilt)
+    :return: словарь с координатами (ключи pan и tilt).
     """
-    logger = log.get_logger("scripts/tools/ptz")
+    logger = statistic.get_log().get_logger("scripts/tools/ptz")
     logger.info("was called (client: SoapClient, login: str, password: str, key2: str)")
     logger.debug("with params (client_obj, " + login + ", " + password + ", " + key2 + ")")
 
     logger.info("call ptzclient_command_simple()")
-    log.print_all("получение старых координат...")
+    statistic.append_info("получение старых координат...", "ИНФО")
     logger.info("getting old coordinates")
     query_all_result = ws.ptzclient_command_simple(client, key2, login, password, False, 0, 0, 0, 0, 0, 0, True, 0, 0,
                                                    -1, -1, False)
-    log.print_all("ws 'ptzclient:Command[QueryAll=True]' выполнен успешно!")
-    logger.info("ws method 'ptzclient:Command[QueryAll=True]' was executed successfully!")
 
     tools.check_types(["old_coordinates['result'][0]"], [query_all_result["result"][0]], [dict], statistic)
     is_old_coordinates = tools.check_keys_exist(query_all_result["result"][0], ["pan", "tilt", "timecoords"],
@@ -79,12 +73,10 @@ def get_coordinates(client: SoapClient, login: str, password: str, key2: str, st
     count_coordinates_missing = 0
     while True:
         logger.info("call ptzclient_command_simple()")
-        log.print_all("получение текуших координат...")
+        statistic.append_info("получение текуших координат...", "ИНФО")
         logger.info("getting current coordinates")
         current_coordinates = ws.ptzclient_command_simple(client, key2, login, password, False, 0, 0, 0, 0, 0, 0, True,
                                                           0, 0, -1, -1, False)
-        log.print_all("ws 'ptzclient:Command[QueryAll=True]' выполнен успешно!")
-        logger.info("ws method 'ptzclient:Command[QueryAll=True]' was executed successfully!")
 
         tools.check_types(["current_coordinates['result'][0]"], [current_coordinates["result"][0]], [dict], statistic)
         is_current_coordinates = tools.check_keys_exist(current_coordinates["result"][0], ["pan", "tilt"],
@@ -125,7 +117,7 @@ def turn(client: SoapClient, login: str, password: str, key1: str, key2: str, ke
     :param statistic: объект класса Statistic
     :return: флаг успешности поворота
     """
-    logger = log.get_logger("scripts/tools/ptz")
+    logger = statistic.get_log().get_logger("scripts/tools/ptz")
     logger.info("was called (client: SoapClient, login: str, password: str, key1: str, key2: str, key3: str, cmd: str)")
     logger.debug("with params (client_obj, " + login + ", " + password + ", " + key1 + ", " + key2 + ", " + key3 +
                  ", " + cmd + ")")
@@ -148,17 +140,17 @@ def turn(client: SoapClient, login: str, password: str, key1: str, key2: str, ke
     else:
         current_coordinate = coordinates["pan"]
 
-    log.print_all("поворот " + cmd + "...")
+    statistic.append_info("поворот " + cmd + "...", "ИНФО")
     logger.info("turning " + cmd)
     if key1 == "" and key3 == "":
         ws.ptzclient_command_simple(client, key2, login, password, False, left, right, up, down, 0, 0, False, 0, 0, -1,
                                     -1, False)
-    log.print_all("ws 'ptzclient:Command[" + cmd + "=70]' отправлен...")
+    statistic.append_info("ws 'ptzclient:Command[" + cmd + "=70]' отправлен...", "ПОВОРОТ")
     logger.info("ws method 'ptzclient:Command[" + cmd + "=70]' was sent")
 
     ws.ptzclient_command_simple(client, key2, login, password,
                                 True, 0, 0, 0, 0, 0, 0, False, 0, 0, -1, -1, False)  # отправка остановки
-    log.print_all("ws 'ptzclient:Command[" + cmd + "=0]' отправлен...")
+    statistic.append_info("ws 'ptzclient:Command[" + cmd + "=0]' отправлен...", "ОСТАНОВКА")
     logger.info("ws method 'ptzclient:Command[" + cmd + "=0]' was sent")
 
     old_coordinate = current_coordinate
@@ -169,7 +161,7 @@ def turn(client: SoapClient, login: str, password: str, key1: str, key2: str, ke
         current_coordinate = coordinates["pan"]
 
     if compare_coordinates(old_coordinate, current_coordinate) is False:
-        log.print_test("Поворот " + cmd + " успешно выполнен!")
+        statistic.append_info("Поворот " + cmd + " успешно выполнен!", "ПОВОРОТ")
         logger.info("turning " + cmd + " was executed successfully!")
         return True
     else:
@@ -191,7 +183,7 @@ def go_to_coordinate(client: SoapClient, login: str, password: str, key2: str, w
     :param inaccuracy точность
     :return: флаг успешности перехода
     """
-    logger = log.get_logger("scripts/tools/ptz")
+    logger = statistic.get_log().get_logger("scripts/tools/ptz")
     logger.info("was called (client: SoapClient, login: str, password: str, key2: str, \
                 cmd: str, coordinate: int, inaccuracy: int = 0)")
     logger.debug("with params (client_obj, " + login + ", " + password + ", " + key2 + ", " +
@@ -217,7 +209,7 @@ def go_to_coordinate(client: SoapClient, login: str, password: str, key2: str, w
     else:
         statistic.append_error(ws_method, "НЕВАЛИД_МЕТОД_PTZ", True)
 
-    log.print_all(message)
+    statistic.append_info(message, "ПЕРЕХОД В КООРДИНАТЫ")
     logger.info(message)
     time.sleep(1)
 
@@ -228,7 +220,7 @@ def go_to_coordinate(client: SoapClient, login: str, password: str, key2: str, w
         current_coordinate = coordinates["pan"]
 
     if compare_coordinates(coordinate, current_coordinate, inaccuracy):
-        log.print_test(cmd + " " + str(coordinate) + " выполнена успешно!")
+        statistic.append_info(cmd + " " + str(coordinate) + " выполнена успешно!", "УСПЕХ")
         logger.info(cmd + " " + str(coordinate) + " was executed successfully!")
         return True
     else:
